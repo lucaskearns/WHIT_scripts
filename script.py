@@ -2,19 +2,23 @@ from Bio import SeqIO
 import re
 import sys
 
-
+###
+# Set up inputs / outputs
+###
 # Read in genbank file for feature information
 gb_file = "sequence.gb"
-fasta_file = "sequence.fasta"
-re_list = [
-    re.compile(s)
-    for s in [
-        "TT[AT]A[TA]A[AGT][TA]TA[GAT]TTAA[TA][TC]",
-        "[GA][TA]TTAA[ATC]TA[AT][TCA]T[TA]T[AT]AA",
-    ]
-]
+fasta_file = "sequence.fasta" # Note, fasta file should be unannotated
+key_file = "key.csv" #key_file = None # Can be set to none to avoid key mapping locus tags to gene names
+filter_file = "down.txt"
+filtered_out_file = "matching_genes_down.txt" 
+motif_match_file = "motif_present.txt"
 
 
+###
+# Read in genome
+###
+
+# Read in genome as a single string
 fasta_str = ""
 
 with open(fasta_file, "r") as o_fa_file:
@@ -22,27 +26,38 @@ with open(fasta_file, "r") as o_fa_file:
     for line in o_fa_file:
         fasta_str += line.rstrip()
 
-print(fasta_str[0:5])
-print(fasta_str[-5:])
+###
+# Parse genbank file for genomic motifs present
+# in between CDS features
+###
 
-print(len(fasta_str))
-i = 0
+# Genomic motifs to search for
+re_list = [
+    re.compile(s)
+    for s in [
+        "TT[AT]A[TAG]A[AGT][TA]TA[GAT]TTAA[TA][TACG]",
+        "[TAGC][TA]TTAA[ATCG]TA[ATG][TCGA]T[TAC]T[AT]AA",
+    ]
+]
 
+# Store motifs with matching genetic feature in inter CDS region
+matched_features = set()
 for record in SeqIO.parse(gb_file, "genbank"):
-    # Currently only expecting one record, but could likely be exteneded easily
+    # Currently only expecting one record, but could be exteneded easily
     print("###### RECORD #######")
     print(record)
     print("####################")
 
+    # Essentially implementing a sliding window algorihtm
     prior_stop = None
-    current_start = None
+    current_start = 0
     current_stop = 0
 
     for feature in record.features:
         if feature.type == "source":  # Skip source features - just overview of geneome
             continue
 
-        if feature.type == "CDS":
+        if feature.type == "CDS": # Only interface with CDS features
             prior_stop = current_stop
             current_start, current_stop = feature.location.start, feature.location.end
 
@@ -61,29 +76,80 @@ for record in SeqIO.parse(gb_file, "genbank"):
 
             for rgx in re_list:
                 matches = rgx.findall(fasta_str[prior_stop:current_start])
-                print(rgx)
-                print(matches)
-
                 if len(matches) != 0:
+                    print("Regex: ", rgx)
+                    
+                    # Record either gene or locus_tag depending on what's available
                     id_str = "NA"
                     q_dict = feature.qualifiers
                     if "gene" in q_dict:
-                        id_str = q_dict["gene"]
+                        id_str = q_dict["gene"][0]
                     elif "locus_tag" in q_dict:
-                        id_str = q_dict["locus_tag"]
-                    # print(feature.qualifiers)
-                    print("MATCH FOUND ", id_str)
+                        id_str = q_dict["locus_tag"][0]
 
-        i += 1
-        # if i == 10:
-        #    sys.exit()
+                    print("MATCH FOUND: ", id_str)
+                    matched_features.add(id_str)
+
+# Rename matched motifs according to a key file.
+# Should be in format "locus_tag, gname" if trying to replace gene
+# name.
+if key_file is not None:
+    key_dict = {}
+    
+    with open(key_file) as o_k:
+        for line in o_k:
+            spl_line = line.rstrip().split(",")
+
+            key_dict[spl_line[0]] = spl_line[1]
 
 
-# with open(gb_file, "r") as o_gb_file:
-#    for feature in SeqIO.parse(o_gb_file, "gb").features:
-#        print(feature)
+    print("Key Dictionary--")
+    print(key_dict)
+    temp_features = set()
+
+    for f in matched_features:
+        if f in key_dict:
+            print(f"{f} is actually {key_dict[f]}")
+            temp_features.add(key_dict[f])
+        else:
+            temp_features.add(f)
 
 
-# Iterate feature by feature, create an upstream window
+    matched_features = temp_features
 
-# Extract upstream window - compare feature against
+
+print("========")
+print("Features containing genomic motif in inter CDS region")
+for f in matched_features:
+    print(f)
+
+
+# Perform feature filtering - only keep features of interest
+valid_features = set()
+with open(filter_file, "r") as o_file:
+    for line in o_file:
+        valid_features.add(line.rstrip())
+
+
+filtered_features = matched_features & valid_features
+
+print("========")
+print("Filtered features")
+print(filtered_features)
+
+# Record filtered features
+with open(filtered_out_file, "w") as o_file:
+    if len(filtered_features) == 0:
+        o_file.write("No Matches!\n")
+    else:
+        for f in filtered_features:
+            o_file.write(f"{f}\n")
+
+
+# Record raw features matching motif
+with open(motif_match_file, "w") as o_file:
+    if len(matched_features) == 0:
+        o_file.write("No Matches!\n")
+    else:
+        for f in matched_features:
+            o_file.write(f"{f}\n")
